@@ -313,6 +313,178 @@ const logout = async (req, res) => {
   return res.json({ success: true, message: "Logged out" });
 };
 
+// -------------------- Forgot Password OTP --------------------
+const forgotPassword = async (req, res) => {
+  const { identifier } = req.body;
+
+  if (!identifier) {
+    return res.status(400).json({
+      success: false,
+      message: "Email or username required.",
+    });
+  }
+
+  try {
+    const [userRows] = await database.query(
+      "SELECT user_id, email FROM users WHERE email = ? OR username = ?",
+      [identifier, identifier]
+    );
+
+    if (userRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Invalid username or email address.",
+      });
+    }
+
+    const user = userRows[0];
+    const otp = Math.floor(10000 + Math.random() * 90000);
+    const expiresAt = new Date(Date.now() + 2 * 60 * 1000);
+
+    await database.query("DELETE FROM user_otps WHERE user_id = ?", [
+      user.user_id,
+    ]);
+
+    await database.query(
+      "INSERT INTO user_otps (user_id, otp_code, expires_at) VALUES (?, ?, ?)",
+      [user.user_id, otp.toString(), expiresAt]
+    );
+
+    console.log(`Forgot password OTP for ${user.email}: ${otp}`);
+
+    return res.json({
+      success: true,
+      message: "Reset code sent to your email.",
+    });
+  } catch (err) {
+    console.error("Forgot password error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Something went wrong. Try again later.",
+    });
+  }
+};
+
+// -------------------- Verify Forgot Password OTP --------------------
+const verifyForgotPasswordOtp = async (req, res) => {
+  const { identifier, otp } = req.body;
+
+  if (!identifier || !otp) {
+    return res.status(400).json({
+      success: false,
+      message: "Identifier and OTP are required.",
+    });
+  }
+
+  try {
+    const [userRows] = await database.query(
+      "SELECT user_id FROM users WHERE email = ? OR username = ?",
+      [identifier, identifier]
+    );
+
+    if (userRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found.",
+      });
+    }
+
+    const userId = userRows[0].user_id;
+
+    const [otpRows] = await database.query(
+      "SELECT otp_code, expires_at FROM user_otps WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+      [userId]
+    );
+
+    if (otpRows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No OTP found for this user.",
+      });
+    }
+
+    const storedOtp = otpRows[0].otp_code;
+    const expiresAt = new Date(otpRows[0].expires_at);
+    const now = new Date();
+
+    if (otp !== storedOtp) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid OTP.",
+      });
+    }
+
+    if (now > expiresAt) {
+      return res.status(400).json({
+        success: false,
+        message: "OTP has expired.",
+      });
+    }
+
+    return res.json({ success: true, message: "OTP verified." });
+  } catch (err) {
+    console.error("OTP verify error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Server error while verifying OTP.",
+    });
+  }
+};
+
+// -------------------- Create New Password --------------------
+const createNewPassword = async (req, res) => {
+  const { identifier, password } = req.body;
+
+  if (!identifier || !password) {
+    return res.status(400).json({
+      success: false,
+      message: "Email/username and password are required.",
+    });
+  }
+
+  try {
+    const [userRows] = await database.query(
+      "SELECT user_id, password AS currentHash FROM users WHERE email = ? OR username = ?",
+      [identifier, identifier]
+    );
+
+    if (userRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found.",
+      });
+    }
+
+    const user = userRows[0];
+
+    const isSame = await bcrypt.compare(password, user.currentHash);
+    if (isSame) {
+      return res.status(400).json({
+        success: false,
+        message: "New password cannot be the same as the previous password.",
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    await database.query("UPDATE users SET password = ? WHERE user_id = ?", [
+      hashedPassword,
+      user.user_id,
+    ]);
+
+    return res.json({
+      success: true,
+      message: "Password updated successfully.",
+    });
+  } catch (err) {
+    console.error("Password reset error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Something went wrong. Try again later.",
+    });
+  }
+};
+
 module.exports = {
   register,
   checkUsername,
@@ -322,4 +494,7 @@ module.exports = {
   verifyLoginOtp,
   checkAuth,
   logout,
+  forgotPassword,
+  verifyForgotPasswordOtp,
+  createNewPassword,
 };
